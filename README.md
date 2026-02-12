@@ -15,7 +15,7 @@ A powerful automation tool for Grand Piece Online (GPO) that handles disconnecti
 - Python 3.x (if running from source)
 
 ## How to use
-1. **Download the latest release:** Get the `.exe` file from the `dist` folder or the Releases page.
+1. **Download the latest release:** Get the `.exe` file from the Releases page.
 2. **Setup Positions:** Go to the "Setup & Settings" tab and follow the steps to set button positions.
 3. **Configure Reconnect:** Take a screenshot of the "Reconnect" button in game and select it in the "Auto Reconnect" tab.
 4. **Start Automation:** Toggle the features you need.
