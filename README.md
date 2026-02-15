@@ -29,3 +29,6 @@ python SCGMreconnect.py
 
 ## Disclaimer
 This tool is for educational purposes. Use at your own risk. Automating gameplay may violate game terms of service.
+
+## License
+This project is licensed under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for details.
