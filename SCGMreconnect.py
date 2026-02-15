@@ -633,6 +633,10 @@ class SCGMreconnect(tk.Tk):
                 except: continue
 
             if len(nums) >= 3:
+                # Update history for stability check in main_loop
+                self._coord_history.append((nums[0], nums[1], nums[2]))
+                if len(self._coord_history) > 5: self._coord_history.pop(0)
+                # Return direct values (No Averaging)
                 return nums[0], nums[1], nums[2]
             
             return None, None, None
@@ -961,11 +965,11 @@ class SCGMreconnect(tk.Tk):
                     # Stability Check
                     if len(self._coord_history) >= 3:
                         last = self._coord_history[-1]
-                        if abs(last[0] - cx) > 0.2 or abs(last[2] - cz) > 0.2:
-                            time.sleep(0.2); continue
+                        if abs(last[0] - cx) > 1.5 or abs(last[2] - cz) > 1.5:
+                            continue
 
                     tx, ty, tz = self.safe_get_float(self.entry_target_x), self.safe_get_float(self.entry_target_y), self.safe_get_float(self.entry_target_z)
-                    thres, pulse = 0.7, 0.15
+                    thres, pulse = 0.65, 0.03
                     mapping = self.config.get("nav_mapping", {"w": "z-", "d": "x+", "space": "y+"})
                     
                     # Movement Logic based on Learned Mapping
@@ -1026,7 +1030,7 @@ class SCGMreconnect(tk.Tk):
                                 self.log("Stuck detected (Oscillation)! Nudging...")
                                 nudge_key = random.choice(['w', 'a', 's', 'd'])
                                 pydirectinput.keyDown(nudge_key)
-                                time.sleep(0.4)
+                                time.sleep(random.uniform(0.2, 0.5))
                                 pydirectinput.keyUp(nudge_key)
                                 self._move_history = [] # Reset history
                                 continue
