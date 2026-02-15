@@ -431,13 +431,27 @@ class SCGMreconnect(tk.Tk):
         self.log_text.config(state='disabled')
         print(full_msg, end='')
 
-    def send_discord(self, message):
-        """Sends an asynchronous Discord webhook notification."""
+    def send_discord(self, message, screenshot=False):
+        """Sends an asynchronous Discord webhook notification with optional screenshot."""
         webhook = self.config.get("discord_webhook")
         if not webhook: return
+        
         def _send():
-            try: requests.post(webhook, json={"content": f"**[GPO auto-reconnect]** {message}"}, timeout=5)
-            except: pass
+            try:
+                payload = {"content": f"**[GPO auto-reconnect]** {message}"}
+                if screenshot:
+                    # Capture and save temp image
+                    img = pyautogui.screenshot()
+                    tmp_file = "discord_alert.png"
+                    img.save(tmp_file)
+                    with open(tmp_file, "rb") as f:
+                        requests.post(webhook, data=payload, files={"file": f}, timeout=10)
+                    if os.path.exists(tmp_file): os.remove(tmp_file)
+                else:
+                    requests.post(webhook, json=payload, timeout=5)
+            except Exception as e:
+                print(f"Discord Notify Error: {e}")
+        
         threading.Thread(target=_send, daemon=True).start()
 
     def toggle_topmost(self):
@@ -895,7 +909,7 @@ class SCGMreconnect(tk.Tk):
                             m_key = self.config.get("macro_hotkey", "f1")
                             pydirectinput.press(m_key)
                             self.log(f"DISCONNECT DETECTED! Stopping external macro via {m_key.upper()} and notifying Discord.")
-                            self.send_discord("⚠️ **Detected Disconnection!** Stopping external macro and attempting to reconnect...")
+                            self.send_discord("⚠️ **Detected Disconnection!** Stopping external macro and attempting to reconnect...", screenshot=True)
                             
                             center = pyautogui.center(loc)
                             pydirectinput.moveTo(int(center.x), int(center.y))
@@ -1023,7 +1037,7 @@ class SCGMreconnect(tk.Tk):
                         m_key = self.config.get("macro_hotkey", "f1")
                         pydirectinput.press(m_key)
                         self.log(f"Restarting external macro via {m_key.upper()}.")
-                        self.send_discord(f"✅ **Destination Reached!** (X:{cx:.2f}, Z:{cz:.2f}). External macro started.")
+                        self.send_discord(f"✅ **Destination Reached!** (X:{cx:.2f}, Z:{cz:.2f}). External macro started.", screenshot=True)
                         self.toggle_ocr_nav()
 
             if keyboard.is_pressed('f8'):
