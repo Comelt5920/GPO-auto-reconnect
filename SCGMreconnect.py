@@ -14,6 +14,8 @@ import pytesseract
 import requests
 import random
 import sys
+import numpy as np
+from PIL import Image, ImageTk, ImageOps, ImageEnhance, ImageFilter
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -95,12 +97,13 @@ class SCGMreconnect(tk.Tk):
         self.joiner_active = False
         self.ocr_nav_active = False
         self.needs_calibration = False
-        self._coord_history = [] 
+        self.log_text = None
+        self._coord_history = []
         self._move_history = []
 
         # Default Configuration Parameters
         self.config = {
-            "server_code": "ex2zKt6dSX",
+            "server_code": "your passcode",
             "reconnect_interval": 10,
             "wait_after_reconnect": 30,
             "reconnect_image": "reconnect_button.png",
@@ -182,16 +185,15 @@ class SCGMreconnect(tk.Tk):
         # Tabs
         self.tab_setup = ttk.Frame(self.notebook, padding="10")
         self.tab_reconnect = ttk.Frame(self.notebook, padding="10")
-        self.tab_joiner = ttk.Frame(self.notebook, padding="10")
-        self.tab_coord = ttk.Frame(self.notebook, padding="10")
+        self.tab_rejoin = ttk.Frame(self.notebook, padding="10")
 
         self.notebook.add(self.tab_setup, text="[1] Setup & Settings")
         self.notebook.add(self.tab_reconnect, text="[2] Auto Reconnect")
-        self.notebook.add(self.tab_joiner, text="[3] Server Joiner")
-        self.notebook.add(self.tab_coord, text="[4] Coord Nav")
+        self.notebook.add(self.tab_rejoin, text="[3] Auto Rejoin")
 
         # --- TAB 1: SETUP & GLOBAL ---
         s_main = self.tab_setup
+        # ... (unchanged setup code) ...
         ttk.Label(s_main, text="Button Positions Setup", font=("Segoe UI", 12, "bold")).pack(pady=(0, 5))
         
         setup_frame = ttk.LabelFrame(s_main, text="Step-by-Step Position Setup", padding=10)
@@ -206,9 +208,18 @@ class SCGMreconnect(tk.Tk):
             "Game Window Focus Point"
         ]
         for step in steps:
-            btn = ttk.Button(setup_frame, text=step, command=lambda s=step: self.start_single_setup(s))
-            btn.pack(fill="x", pady=2)
+            step_frame = ttk.Frame(setup_frame)
+            step_frame.pack(fill="x", pady=2)
+            
+            btn = ttk.Button(step_frame, text=step, command=lambda s=step: self.start_single_setup(s))
+            btn.pack(side="left", fill="x", expand=True)
             self.setup_buttons[step] = btn
+            
+            # Add verification button
+            test_btn = ttk.Button(step_frame, text="🔍", width=4, command=lambda s=step: self.test_position(s))
+            test_btn.pack(side="right", padx=(2, 0))
+        
+        self.update_setup_status()
 
         # Global Settings Frame
         global_frame = ttk.LabelFrame(s_main, text="Settings & Notifications", padding=10)
@@ -231,7 +242,9 @@ class SCGMreconnect(tk.Tk):
 
         # --- TAB 2: AUTO RECONNECT ---
         r_main = self.tab_reconnect
-        ttk.Label(r_main, text="Auto Reconnect Monitor", font=("Segoe UI", 12, "bold")).pack(pady=(0, 5))
+        ttk.Label(r_main, text="Auto Reconnect Monitor", font=("Segoe UI", 12, "bold")).pack(pady=(0, 2))
+        ttk.Label(r_main, text="Detects disconnections and automatically clicks the Reconnect button using on-screen image recognition.", 
+                  font=("Segoe UI", 9), foreground="gray", wraplength=400, justify="center").pack(pady=(0, 10))
 
         # Status
         status_rec = ttk.Frame(r_main)
@@ -254,47 +267,98 @@ class SCGMreconnect(tk.Tk):
         self.lbl_img_path.pack(side="left", padx=5)
         ttk.Button(img_frame, text="Select", command=self.select_reconnect_image, width=10).pack(side="right")
         
+        # Image Preview
+        self.lbl_img_preview = ttk.Label(r_main, text="[ Image Preview ]")
+        self.lbl_img_preview.pack(pady=5)
+        self.update_image_preview()
+
+        # Capture Instructions
+        instr_frame = ttk.LabelFrame(r_main, text="How to Capture (Capture Instructions)", padding=10)
+        instr_frame.pack(fill="x", pady=5)
+        
+        instructions = (
+            "1. Enter GPO game.\n"
+            "2. Disconnect your internet to trigger the disconnect screen.\n"
+            "3. Wait for the 'Reconnect' button to appear.\n"
+            "4. Capture ONLY the button (Crop it tightly around the edges).\n"
+            "5. Save as 'reconnect_button.png' in the program folder."
+        )
+        ttk.Label(instr_frame, text=instructions, font=("Segoe UI", 8), justify="left", foreground="#555").pack(fill="x")
+        
         # Controls
         self.btn_rec_toggle = ttk.Button(r_main, text="START MONITORING", command=self.toggle_reconnect)
         self.btn_rec_toggle.pack(fill="x", pady=10)
         ttk.Button(r_main, text="DEBUG: Test Image Detection", command=self.debug_test_detection).pack(fill="x")
 
-        # --- TAB 3: SERVER JOINER ---
-        j_main = self.tab_joiner
-        ttk.Label(j_main, text="Private Server Auto-Joiner", font=("Segoe UI", 12, "bold")).pack(pady=(0, 5))
+        # --- TAB 3: AUTO REJOIN (Merged Joiner & Navigation) ---
+        # Using a canvas with scrollbar to handle more content
+        canvas_rejoin = tk.Canvas(self.tab_rejoin)
+        scrollbar_rejoin = ttk.Scrollbar(self.tab_rejoin, orient="vertical", command=canvas_rejoin.yview)
+        scrollable_frame = ttk.Frame(canvas_rejoin)
 
-        status_join = ttk.Frame(j_main)
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas_rejoin.configure(
+                scrollregion=canvas_rejoin.bbox("all")
+            )
+        )
+
+        canvas_rejoin.create_window((0, 0), window=scrollable_frame, anchor="nw", width=420)
+        canvas_rejoin.configure(yscrollcommand=scrollbar_rejoin.set)
+
+        canvas_rejoin.pack(side="left", fill="both", expand=True)
+        scrollbar_rejoin.pack(side="right", fill="y")
+
+        rejoin_main = scrollable_frame
+        ttk.Label(rejoin_main, text="Full Auto Rejoin Sequence", font=("Segoe UI", 12, "bold")).pack(pady=(0, 2))
+        ttk.Label(rejoin_main, text="Merges Private Server joining with Coordinate Navigation to fully automate the rejoin process.", 
+                  font=("Segoe UI", 9), foreground="gray", wraplength=400, justify="center").pack(pady=(0, 10))
+
+        # --- SECTION: PRIVATE SERVER JOINER ---
+        join_lf = ttk.LabelFrame(rejoin_main, text="Step 1: Private Server Joiner", padding=10)
+        join_lf.pack(fill="x", pady=5)
+
+        status_join = ttk.Frame(join_lf)
         status_join.pack(fill="x", pady=5)
         ttk.Label(status_join, text="Status: ").pack(side="left")
         self.lbl_status_join = ttk.Label(status_join, text="Inactive", foreground="red", font=("Segoe UI", 9, "bold"))
         self.lbl_status_join.pack(side="left")
 
-        ttk.Label(j_main, text="Private Server Code:").pack(anchor="w")
-        self.entry_server_code = ttk.Entry(j_main)
+        ttk.Label(join_lf, text="Private Server Code:").pack(anchor="w")
+        self.entry_server_code = ttk.Entry(join_lf)
         self.entry_server_code.insert(0, self.config["server_code"])
         self.entry_server_code.pack(fill="x", pady=5)
 
-        ttk.Label(j_main, text="Wait After Reconnect (s):").pack(anchor="w")
-        self.entry_wait_time = ttk.Entry(j_main)
+        ttk.Label(join_lf, text="Wait After Reconnect (s):").pack(anchor="w")
+        self.entry_wait_time = ttk.Entry(join_lf)
         self.entry_wait_time.insert(0, str(self.config["wait_after_reconnect"]))
         self.entry_wait_time.pack(fill="x", pady=5)
 
-        self.btn_join_toggle = ttk.Button(j_main, text="START AUTO JOINER", command=self.toggle_joiner)
-        self.btn_join_toggle.pack(fill="x", pady=10)
-        ttk.Button(j_main, text="TEST JOIN NOW (F8)", command=self.test_join_manual).pack(fill="x")
+        self.btn_join_toggle = ttk.Button(join_lf, text="ENABLE AUTO JOINER", command=self.toggle_joiner)
+        self.btn_join_toggle.pack(fill="x", pady=5)
+        ttk.Button(join_lf, text="MANUAL JOIN TEST (F8)", command=self.test_join_manual).pack(fill="x")
 
-        # --- TAB 4: COORDINATE NAVIGATION ---
-        c_main = self.tab_coord
-        ttk.Label(c_main, text="Coordinate Navigation (OCR)", font=("Segoe UI", 12, "bold")).pack(pady=(0, 5))
+        # --- SECTION: COORDINATE NAVIGATION ---
+        nav_lf = ttk.LabelFrame(rejoin_main, text="Step 2: Coordinate Navigation", padding=10)
+        nav_lf.pack(fill="x", pady=5)
 
-        status_ocr = ttk.Frame(c_main)
+        status_ocr = ttk.Frame(nav_lf)
         status_ocr.pack(fill="x", pady=5)
         ttk.Label(status_ocr, text="Status: ").pack(side="left")
         self.lbl_status_ocr = ttk.Label(status_ocr, text="Inactive", foreground="red", font=("Segoe UI", 9, "bold"))
         self.lbl_status_ocr.pack(side="left")
 
+        # Live Monitor (New Section)
+        live_lf = ttk.LabelFrame(nav_lf, text="Live Tracker (Real-time)", padding=10)
+        live_lf.pack(fill="x", pady=5)
+        
+        self.lbl_live_coords = ttk.Label(live_lf, text="Current Coords: X: --, Y: --, Z: --", font=("Segoe UI", 9, "bold"))
+        self.lbl_live_coords.pack()
+        self.lbl_live_dist = ttk.Label(live_lf, text="Distance to Target: -- m", font=("Segoe UI", 11, "bold"), foreground="#0078d7")
+        self.lbl_live_dist.pack()
+
         # Axis Config
-        input_frame = ttk.Frame(c_main)
+        input_frame = ttk.Frame(nav_lf)
         input_frame.pack(fill="x", pady=5)
         for i, axis in enumerate(["X", "Y", "Z"]):
             ttk.Label(input_frame, text=f"{axis}:").grid(row=0, column=i*2, sticky="w")
@@ -303,30 +367,12 @@ class SCGMreconnect(tk.Tk):
             entry.grid(row=0, column=i*2+1, padx=2)
             setattr(self, f"entry_target_{axis.lower()}", entry)
 
-        ttk.Button(c_main, text="Select Screen Region", command=self.select_ocr_region).pack(fill="x", pady=2)
-        ttk.Button(c_main, text="Test OCR Reading", command=self.test_ocr).pack(fill="x", pady=2)
-        ttk.Button(c_main, text="Set Current Coords as Target", command=self.set_current_as_target).pack(fill="x", pady=2)
+        ttk.Button(nav_lf, text="Select X, Y, Z Region (OCR Selection)", command=self.select_ocr_region).pack(fill="x", pady=2)
+        ttk.Button(nav_lf, text="Test OCR Reading", command=self.test_ocr).pack(fill="x", pady=2)
+        ttk.Button(nav_lf, text="Set Current Coords as Target", command=self.set_current_as_target).pack(fill="x", pady=2)
         
-        self.btn_ocr_toggle = ttk.Button(c_main, text="START NAVIGATION", command=self.toggle_ocr_nav)
-        self.btn_ocr_toggle.pack(fill="x", pady=(5, 10))
-
-        # Direction Mapping (Sub-Frame)
-        map_frame = ttk.LabelFrame(c_main, text="Direction Mapping Controls", padding=5)
-        map_frame.pack(fill="x", pady=5)
-        map_inner = ttk.Frame(map_frame)
-        map_inner.pack(fill="x")
-
-        ttk.Label(map_inner, text="W:").grid(row=0, column=0, padx=2)
-        self.combo_w_map = ttk.Combobox(map_inner, values=["x+", "x-", "z+", "z-"], width=5, state="readonly")
-        self.combo_w_map.set(self.config["nav_mapping"].get("w", "z-"))
-        self.combo_w_map.grid(row=0, column=1, padx=5)
-
-        ttk.Label(map_inner, text="D:").grid(row=0, column=2, padx=2)
-        self.combo_d_map = ttk.Combobox(map_inner, values=["x+", "x-", "z+", "z-"], width=5, state="readonly")
-        self.combo_d_map.set(self.config["nav_mapping"].get("d", "x+"))
-        self.combo_d_map.grid(row=0, column=3, padx=5)
-
-        ttk.Button(map_frame, text="Set GPO Defaults", command=self.set_gpo_defaults).pack(fill="x", pady=5)
+        self.btn_ocr_toggle = ttk.Button(nav_lf, text="ENABLE AUTO NAVIGATION", command=self.toggle_ocr_nav)
+        self.btn_ocr_toggle.pack(fill="x", pady=(5, 5))
 
         # --- SHARED ACTIVITY LOGS (BOTTOM AREA) ---
         log_frame = ttk.LabelFrame(self, text="Shared Activity Logs (Sync Across All Tabs)", padding=10)
@@ -340,6 +386,40 @@ class SCGMreconnect(tk.Tk):
         self.log("GPO auto-reconnect Initialized (Sync Logs Active).")
 
         self.log("GPO auto-reconnect Initialized.")
+
+    def update_setup_status(self):
+        """Checks if positions are already saved and updates button labels."""
+        if not hasattr(self, 'setup_buttons'): return
+        saved_pos = {}
+        if os.path.exists(POS_FILE):
+            try:
+                with open(POS_FILE, "r") as f:
+                    saved_pos = json.load(f)
+            except:
+                pass
+        
+        for step, btn in self.setup_buttons.items():
+            if step in saved_pos:
+                btn.config(text=f"{step} [ ✓ SET ]")
+            else:
+                btn.config(text=step)
+
+    def test_position(self, step_name):
+        """Moves the mouse to the saved position for verification."""
+        if os.path.exists(POS_FILE):
+            try:
+                with open(POS_FILE, "r") as f:
+                    pos_data = json.load(f)
+                    if step_name in pos_data:
+                        p = pos_data[step_name]
+                        # Move mouse to the saved location
+                        pyautogui.moveTo(p['x'], p['y'], duration=0.5)
+                        self.log(f"Test Position: Mouse moved to '{step_name}' ({p['x']}, {p['y']})")
+                    else:
+                        self.log(f"Test Failed: No saved position for '{step_name}'")
+                        messagebox.showinfo("Not Set", f"Please setup '{step_name}' first!")
+            except Exception as e:
+                self.log(f"Verification Error: {e}")
 
     def log(self, message):
         """Append a timestamped message to the UI log."""
@@ -376,6 +456,21 @@ class SCGMreconnect(tk.Tk):
             self.lbl_status_rec.config(text="Inactive", foreground="red")
             self.log("Auto Reconnect: DISABLED")
 
+    def update_image_preview(self):
+        """Loads and displays a small preview of the reconnect image."""
+        img_path = self.config.get("reconnect_image", "reconnect_button.png")
+        if os.path.exists(img_path):
+            try:
+                img = Image.open(img_path)
+                # Resize for preview while maintaining aspect ratio
+                img.thumbnail((150, 60))
+                self.img_tk = ImageTk.PhotoImage(img) # Keep reference
+                self.lbl_img_preview.config(image=self.img_tk, text="")
+            except Exception as e:
+                self.lbl_img_preview.config(image="", text=f"Error loading image: {e}")
+        else:
+            self.lbl_img_preview.config(image="", text="[ No Image Found ]")
+
     def select_reconnect_image(self):
         """Allows user to browse and select a reconnect button image."""
         file_path = filedialog.askopenfilename(
@@ -393,6 +488,7 @@ class SCGMreconnect(tk.Tk):
                 
                 self.config["reconnect_image"] = filename
                 self.lbl_img_path.config(text=f"Image: {filename}")
+                self.update_image_preview()
                 self.save_config()
                 self.log(f"New reconnect image set: {filename}")
             except Exception as e:
@@ -456,6 +552,8 @@ class SCGMreconnect(tk.Tk):
             self.lbl_status_ocr.config(text="Inactive", foreground="red")
             self.log("Navigation: DISABLED")
             self.needs_calibration = False
+            self.after(0, lambda: self.lbl_live_coords.config(text="Current Coords: X: --, Y: --, Z: --"))
+            self.after(0, lambda: self.lbl_live_dist.config(text="Distance to Target: -- m"))
             for key in ['w', 's', 'a', 'd', 'space']: pydirectinput.keyUp(key)
 
     def select_ocr_region(self):
@@ -466,42 +564,78 @@ class SCGMreconnect(tk.Tk):
         self.save_config()
         self.log(f"OCR Region locked: {region}")
 
-    def get_current_coords(self):
-        """Reads and parses coordinates from the defined screen region."""
+    def get_current_coords(self, save_debug=False):
+        """Reads coordinates using Tesseract with 4x enhancement and Inversion."""
         try:
             region = self.config.get("ocr_region")
             if not region: return None, None, None
             
-            # Capture and preprocess
-            screenshot = pyautogui.screenshot(region=region).convert('L')
-            text = pytesseract.image_to_string(screenshot).lower()
+            # Capture
+            screenshot = pyautogui.screenshot(region=region)
             
-            float_pattern = r'(-?\d+\.\d+|-?\d+)'
-            x_m = re.search(r'x\s*[:\s]*[:\s]+' + float_pattern, text)
-            y_m = re.search(r'y\s*[:\s]*[:\s]+' + float_pattern, text)
-            z_m = re.search(r'z\s*[:\s]*[:\s]+' + float_pattern, text)
+            # Enhancement: Upscale 4x
+            w, h = screenshot.size
+            screenshot = screenshot.resize((w*4, h*4), Image.Resampling.LANCZOS)
             
-            if x_m and y_m and z_m:
-                val = (float(x_m.group(1)), float(y_m.group(1)), float(z_m.group(1)))
-            else:
-                nums = re.findall(float_pattern, text)
-                if len(nums) >= 3: val = (float(nums[0]), float(nums[1]), float(nums[2]))
-                else: return None, None, None
+            # Enhancement: Invert (Black text on White)
+            screenshot = screenshot.convert('L')
+            screenshot = ImageOps.invert(screenshot)
+            
+            # Enhancement: High Contrast
+            enhancer = ImageEnhance.Contrast(screenshot)
+            screenshot = enhancer.enhance(3.0)
+            screenshot = screenshot.point(lambda p: 255 if p > 160 else 0)
+            
+            if save_debug:
+                screenshot.save("debug_ocr.png")
+            
+            # Tesseract OCR (PSM 7 is best for single lines/fragments)
+            custom_config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.xyz:- '
+            text = pytesseract.image_to_string(screenshot, config=custom_config).lower()
+            
+            if save_debug: self.log(f"OCR Raw Text: {text.strip()}")
 
-            # Moving average smoothing
-            self._coord_history.append(val)
-            if len(self._coord_history) > 3: self._coord_history.pop(0)
-            avg = [sum(axis)/len(self._coord_history) for axis in zip(*self._coord_history)]
-            return avg[0], avg[1], avg[2]
-        except:
+            # Cleanup x, y, z labels
+            text = re.sub(r'[xyz%:]', ' ', text)
+            
+            # Fix misread minus signs (sometimes read as ' ' or '.' depending on font)
+            # In Tesseract, we search for numbers. If navigation is messed up, 
+            # we'll tweak this regex further.
+            num_pattern = r'([-.]?\s*\d+\.\d+|[-.]?\s*\d+)'
+            raw_nums = re.findall(num_pattern, text)
+            
+            nums = []
+            for n in raw_nums:
+                try:
+                    clean_n = n.replace(" ", "")
+                    # Small GPO fix: lone '.' usually means '-' for the Z coord
+                    if clean_n.startswith('.'): clean_n = '-' + clean_n[1:]
+                    
+                    if clean_n and clean_n != "-":
+                        val = float(clean_n)
+                        # Filter single digit labels
+                        if abs(val) < 10 and "." not in clean_n: continue
+                        nums.append(val)
+                except: continue
+
+            if len(nums) >= 3:
+                return nums[0], nums[1], nums[2]
+            
+            return None, None, None
+        except Exception as e:
+            if save_debug: self.log(f"OCR Error: {e}")
             return None, None, None
 
     def test_ocr(self):
-        x, y, z = self.get_current_coords()
-        if x is not None:
-            self.log(f"OCR Success: X={x:.2f}, Y={y:.2f}, Z={z:.2f}")
+        """Manual test button to verify OCR reading with debug image."""
+        self.log("Testing OCR reading with debug image...")
+        cx, cy, cz = self.get_current_coords(save_debug=True)
+        if cx is not None:
+            self.log(f"Success! Found Coords -> X:{cx:.1f} Y:{cy:.1f} Z:{cz:.1f}")
+            messagebox.showinfo("OCR Success", f"X: {cx:.2f}\nY: {cy:.2f}\nZ: {cz:.2f}\n\nCheck 'debug_ocr.png' for the image used.")
         else:
-            self.log("OCR Failed: Coordinate format not found.")
+            self.log("Failed: Could not read coordinates. Check 'debug_ocr.png' to see what the bot caught.")
+            messagebox.showwarning("OCR Failed", "Could not read 3 numbers.\nOpen 'debug_ocr.png' in your folder to see if the region is correct!")
 
     def set_current_as_target(self):
         x, y, z = self.get_current_coords()
@@ -569,7 +703,6 @@ class SCGMreconnect(tk.Tk):
 
             if dir1 and dir1 == dir2:
                 mapping["w"] = dir1
-                self.after(0, lambda d=dir1: self.combo_w_map.set(d))
                 self.log(f"-> Verified W mapping: {dir1}")
                 break
             self.log("Calibration Warning: 'W' inconsistent or no movement. Retrying in 2s...")
@@ -595,13 +728,8 @@ class SCGMreconnect(tk.Tk):
             self.log(f"Round 2 -> {dir2 if dir2 else 'No Movement'}")
 
             if dir1 and dir1 == dir2:
-                # Basic conflict resolution: if D tries to map to the same axis as W with the same dir
-                if dir1 == mapping.get("w"):
-                    self.log(f"Conflict: D wants {dir1} but W is already {mapping['w']}. Adjusting...")
-                    # This logic is simpler handled after verification
-                
+                # Basic conflict resolution
                 mapping["d"] = dir1
-                self.after(0, lambda d=dir1: self.combo_d_map.set(d))
                 self.log(f"-> Verified D mapping: {dir1}")
                 break
             self.log("Calibration Warning: 'D' inconsistent or no movement. Retrying in 2s...")
@@ -613,7 +741,6 @@ class SCGMreconnect(tk.Tk):
                 self.log("Mapping conflict (Both mapped to same axis). Resetting to fallback logic.")
                 if mapping["w"][0] == 'z': mapping["d"] = "x+"
                 else: mapping["d"] = "z-"
-                self.after(0, lambda: self.combo_d_map.set(mapping["d"]))
 
         self.config["nav_mapping"] = mapping
         self.save_config()
@@ -637,9 +764,7 @@ class SCGMreconnect(tk.Tk):
                 with open(POS_FILE, "w") as f: json.dump(saved_pos, f)
                 
                 self.log(f"Position Saved: {step_name}")
-                self.after(0, lambda: self.setup_buttons[step_name].config(text="[ ✓ SAVED ]"))
-                time.sleep(2)
-                self.after(0, lambda: self.setup_buttons[step_name].config(text=step_name))
+                self.after(0, self.update_setup_status)
                 break
             time.sleep(0.05)
 
@@ -813,6 +938,12 @@ class SCGMreconnect(tk.Tk):
 
                 cx, cy, cz = self.get_current_coords()
                 if cx is not None:
+                    # Update Live Tracker UI
+                    tx, ty, tz = self.safe_get_float(self.entry_target_x), self.safe_get_float(self.entry_target_y), self.safe_get_float(self.entry_target_z)
+                    dist = ((cx-tx)**2 + (cz-tz)**2)**0.5
+                    self.after(0, lambda c=(cx,cy,cz), d=dist: self.lbl_live_coords.config(text=f"Current: X:{c[0]:.1f} Y:{c[1]:.1f} Z:{c[2]:.1f}"))
+                    self.after(0, lambda d=dist: self.lbl_live_dist.config(text=f"Distance to Target: {d:.2f} m"))
+                    
                     # Stability Check
                     if len(self._coord_history) >= 3:
                         last = self._coord_history[-1]
@@ -820,7 +951,7 @@ class SCGMreconnect(tk.Tk):
                             time.sleep(0.2); continue
 
                     tx, ty, tz = self.safe_get_float(self.entry_target_x), self.safe_get_float(self.entry_target_y), self.safe_get_float(self.entry_target_z)
-                    thres, pulse = 0.7, 0.015
+                    thres, pulse = 0.7, 0.15
                     mapping = self.config.get("nav_mapping", {"w": "z-", "d": "x+", "space": "y+"})
                     
                     # Movement Logic based on Learned Mapping
@@ -862,8 +993,9 @@ class SCGMreconnect(tk.Tk):
                     need_up = (cy < ty and mapping.get("space") == "y+") or (cy > ty and mapping.get("space") == "y-")
                     if abs(cy - ty) > 0.7 and need_up:
                         pydirectinput.press('space')
-                    # Normal Navigation
-                    elif z_act or x_act:
+                    
+                    # Normal Navigation (No longer elif - allows moving while jumping)
+                    if z_act or x_act:
                         act = z_act or x_act
                         
                         # Anti-Oscillation Logic
@@ -897,7 +1029,7 @@ class SCGMreconnect(tk.Tk):
             if keyboard.is_pressed('f8'):
                 self.run_join_sequence()
                 time.sleep(2)
-            time.sleep(0.1)
+            time.sleep(0.01)
 
 if __name__ == "__main__":
     app = SCGMreconnect()
