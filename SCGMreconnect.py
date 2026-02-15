@@ -523,7 +523,7 @@ class SCGMreconnect(tk.Tk):
         self.log("Navigation mapping set to GPO Defaults: W=z-, D=x+")
 
     def calibration_thread(self):
-        """Learns key mappings with enhanced stability and verification."""
+        """Learns key mappings with double-verification for maximum accuracy."""
         time.sleep(3)
         if not self.config.get("ocr_region"):
             self.log("Calibration Failed: Select OCR region first.")
@@ -535,62 +535,89 @@ class SCGMreconnect(tk.Tk):
                 c = self.get_current_coords()
                 if c[0] is not None: samples.append(c)
                 time.sleep(0.3)
-            if not samples: return None, None, None
+            if not samples: return [None, None, None]
             return [round(sorted(axis)[len(axis)//2], 2) for axis in zip(*samples)]
 
-        old = get_stable()
-        if old[0] is None:
-            self.log("Calibration Error: Baseline reading failed. Check OCR region.")
-            return False
+        def get_direction(p1, p2):
+            if p1[0] is None or p2[0] is None: return None
+            dx, dz = p2[0] - p1[0], p2[2] - p1[2]
+            if abs(dx) > abs(dz) and abs(dx) > 0.1: return f"x{'+' if dx > 0 else '-'}"
+            if abs(dz) > abs(dx) and abs(dz) > 0.1: return f"z{'+' if dz > 0 else '-'}"
+            return None
 
         mapping = {"space": "y+"}
-        cal_pulse = 0.5
+        cal_pulse = 0.1
         
-        # Test W
-        self.log(f"Calibration: Testing 'W' ({cal_pulse}s)...")
-        pydirectinput.keyDown('w'); time.sleep(cal_pulse); pydirectinput.keyUp('w')
-        time.sleep(0.5)
-        curr = get_stable()
-        if curr[0] is None: return False
-        
-        dx, dz = curr[0] - old[0], curr[2] - old[2]
-        self.log(f"W Movement -> dX: {dx:.2f}, dZ: {dz:.2f}")
+        # --- Verified Test for W ---
+        while True:
+            self.log("Calibration: Testing 'W' - Round 1...")
+            p_start = get_stable()
+            pydirectinput.keyDown('w'); time.sleep(cal_pulse); pydirectinput.keyUp('w')
+            time.sleep(1.0)
+            p_mid = get_stable()
+            dir1 = get_direction(p_start, p_mid)
+            
+            self.log(f"Round 1 -> {dir1 if dir1 else 'No Movement'}")
+            
+            self.log("Calibration: Testing 'W' - Round 2...")
+            pydirectinput.keyDown('w'); time.sleep(cal_pulse); pydirectinput.keyUp('w')
+            time.sleep(1.0)
+            p_final = get_stable()
+            dir2 = get_direction(p_mid, p_final)
+            
+            self.log(f"Round 2 -> {dir2 if dir2 else 'No Movement'}")
 
-        if abs(dz) > abs(dx) and abs(dz) > 0.1:
-            mapping["w"] = "z+" if dz > 0 else "z-"
-        elif abs(dx) > abs(dz) and abs(dx) > 0.1:
-            mapping["w"] = "x+" if dx > 0 else "x-"
-        
-        if "w" in mapping: 
-            self.log(f"-> Learned W: {mapping['w']}")
-            self.after(0, lambda: self.combo_w_map.set(mapping["w"]))
+            if dir1 and dir1 == dir2:
+                mapping["w"] = dir1
+                self.after(0, lambda d=dir1: self.combo_w_map.set(d))
+                self.log(f"-> Verified W mapping: {dir1}")
+                break
+            self.log("Calibration Warning: 'W' inconsistent or no movement. Retrying in 2s...")
+            time.sleep(2)
 
-        # Test D
-        self.log(f"Calibration: Testing 'D' ({cal_pulse}s)...")
-        pydirectinput.keyDown('d'); time.sleep(cal_pulse); pydirectinput.keyUp('d')
-        time.sleep(0.5)
-        final = get_stable()
-        if final[0] is None: return False
-        
-        dx, dz = final[0] - curr[0], final[2] - curr[2]
-        self.log(f"D Movement -> dX: {dx:.2f}, dZ: {dz:.2f}")
+        # --- Verified Test for D ---
+        while True:
+            self.log("Calibration: Testing 'D' - Round 1...")
+            p_start = get_stable()
+            pydirectinput.keyDown('d'); time.sleep(cal_pulse); pydirectinput.keyUp('d')
+            time.sleep(1.0)
+            p_mid = get_stable()
+            dir1 = get_direction(p_start, p_mid)
+            
+            self.log(f"Round 1 -> {dir1 if dir1 else 'No Movement'}")
+            
+            self.log("Calibration: Testing 'D' - Round 2...")
+            pydirectinput.keyDown('d'); time.sleep(cal_pulse); pydirectinput.keyUp('d')
+            time.sleep(1.0)
+            p_final = get_stable()
+            dir2 = get_direction(p_mid, p_final)
+            
+            self.log(f"Round 2 -> {dir2 if dir2 else 'No Movement'}")
 
-        if abs(dx) > abs(dz) and abs(dx) > 0.1:
-            mapping["d"] = "x+" if dx > 0 else "x-"
-        elif abs(dz) > abs(dx) and abs(dz) > 0.1:
-            mapping["d"] = "z+" if dz > 0 else "z-"
-        
-        if "w" in mapping and "d" in mapping and mapping["w"][0] == mapping["d"][0]:
-            if mapping["w"][0] == 'z': mapping["d"] = "x+" if dx > 0 else "x-"
-            else: mapping["d"] = "z+" if dz > 0 else "z-"
+            if dir1 and dir1 == dir2:
+                # Basic conflict resolution: if D tries to map to the same axis as W with the same dir
+                if dir1 == mapping.get("w"):
+                    self.log(f"Conflict: D wants {dir1} but W is already {mapping['w']}. Adjusting...")
+                    # This logic is simpler handled after verification
+                
+                mapping["d"] = dir1
+                self.after(0, lambda d=dir1: self.combo_d_map.set(d))
+                self.log(f"-> Verified D mapping: {dir1}")
+                break
+            self.log("Calibration Warning: 'D' inconsistent or no movement. Retrying in 2s...")
+            time.sleep(2)
 
-        if "d" in mapping: 
-            self.log(f"-> Learned D: {mapping['d']}")
-            self.after(0, lambda: self.combo_d_map.set(mapping["d"]))
+        # Final check for mapping logic (X/Z should be different)
+        if mapping.get("w") and mapping.get("d"):
+            if mapping["w"][0] == mapping["d"][0]:
+                self.log("Mapping conflict (Both mapped to same axis). Resetting to fallback logic.")
+                if mapping["w"][0] == 'z': mapping["d"] = "x+"
+                else: mapping["d"] = "z-"
+                self.after(0, lambda: self.combo_d_map.set(mapping["d"]))
 
         self.config["nav_mapping"] = mapping
         self.save_config()
-        self.log(f"Calibration Success! Mapping: {mapping}")
+        self.log(f"Calibration SUCCESS! Mapping: {mapping}")
         return True
 
     def start_single_setup(self, step_name):
